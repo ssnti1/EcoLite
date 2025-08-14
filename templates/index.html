@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="utf-8">
+  <title>EcoLite Reportes - Una sola página</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #f4f6f8;
+      color: #222
+    }
+
+    nav {
+      background: #0ea5e9;
+      color: white;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0
+    }
+
+    nav h1 {
+      font-size: 20px;
+      margin: 0
+    }
+
+    nav form {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin: 0
+    }
+
+    nav input[type=file] {
+      background: white;
+      padding: 6px;
+      border-radius: 6px
+    }
+
+    nav button {
+      background: #0369a1;
+      color: white;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer
+    }
+
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px
+    }
+
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+      margin-bottom: 20px
+    }
+
+    .outputs img {
+      max-width: 100%;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      margin-top: 8px
+    }
+
+    label {
+      font-size: 13px;
+      color: #555
+    }
+
+    input,
+    select {
+      width: 100%;
+      padding: 8px;
+      margin-top: 4px;
+      margin-bottom: 8px;
+      border: 1px solid #ccc;
+      border-radius: 6px
+    }
+
+    button.report {
+      background: #0ea5e9;
+      color: white;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 6px;
+      cursor: pointer
+    }
+
+    .notice {
+      background: #fff3cd;
+      color: #7c6f00;
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 12px
+    }
+  </style>
+</head>
+
+<body>
+  <nav>
+    <h1>EcoLite Reportes</h1>
+    <form method="post" enctype="multipart/form-data">
+      <input type="hidden" name="accion" value="upload">
+      <input type="file" name="archivo" accept=".xlsx,.xls" required>
+      <button type="submit">Subir Archivo</button>
+    </form>
+  </nav>
+  <main>
+    {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
+    <div>Estado: {% if has_excel %}✅ archivo cargado{% else %}⛔ sin archivo{% endif %}</div>
+
+    {% for val,label in available %}
+    <div class="card">
+      <h3>{{ label }}</h3>
+      <form method="post">
+        <input type="hidden" name="accion" value="run">
+        <input type="hidden" name="reporte" value="{{ val }}">
+        <div style="display:flex;flex-wrap:wrap;gap:10px">
+          <div style="flex:1;min-width:120px" class="form-field" data-field="anio">
+            <label>Año</label>
+            <input name="anio" placeholder="2025" >
+          </div>
+          <div style="flex:1;min-width:120px" class="form-field" data-field="mes_inicio">
+            <label>Mes inicio</label>
+            <input name="mes_inicio" placeholder="1" >
+          </div>
+          <div style="flex:1;min-width:120px" class="form-field" data-field="dia_inicio">
+            <label>Día inicio</label>
+            <input name="dia_inicio" placeholder="1" >
+          </div>
+          <div style="flex:1;min-width:120px" class="form-field" data-field="mes_fin">
+            <label>Mes fin</label>
+            <input name="mes_fin" placeholder="12" >
+          </div>
+          <div style="flex:1;min-width:120px" class="form-field" data-field="dia_fin">
+            <label>Día fin</label>
+            <input name="dia_fin" placeholder="31" >
+          </div>
+          <div style="flex:1;min-width:120px" class="form-field" data-field="top_vendedores">
+            <label>Top vendedores</label>
+            <input name="top_vendedores" placeholder="10" >
+          </div>
+          <div style="flex:1;min-width:120px" class="form-field" data-field="top_productos">
+            <label>Top productos</label>
+            <input name="top_productos" placeholder="10" >
+          </div>
+          <div style="flex:1;min-width:120px" class="form-field" data-field="top_departamentos">
+            <label>Top departamentos</label>
+            <input name="top_departamentos" placeholder="10" >
+          </div>
+          <div style="flex:1;min-width:120px" class="form-field" data-field="top_ciudades">
+            <label>Top ciudades</label>
+            <input name="top_ciudades" placeholder="10" >
+          </div>
+          <div style="flex:1;min-width:120px" class="form-field" data-field="top_n">
+            <label>Top N (genérico)</label>
+            <input name="top_n" placeholder="10" >
+          </div>
+        </div>
+        <button class="report" type="submit">Generar {{ label }}</button>
+      </form>
+      {% if outputs.get(val) %}
+      <div class="outputs">
+        {% for path in outputs[val] %}
+        {% if path.endswith('.png') or path.endswith('.jpg') or path.endswith('.jpeg') %}
+        <img src="{{ url_for('static', filename=path) }}">
+        {% else %}
+        <a href="{{ url_for('static', filename=path) }}" download>Descargar {{ path.rsplit('/',1)[-1] }}</a>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </main>
+
+
+<script>
+  // Opción B: envolver en comillas y luego parsear
+  const reportFields = JSON.parse('{{ report_fields | tojson | safe }}');
+
+  document.querySelectorAll('.card form').forEach(form => {
+    const reporte = form.querySelector('input[name="reporte"]').value;
+    const required = reportFields[reporte] || [];
+
+    form.querySelectorAll('.form-field').forEach(field => {
+      field.style.display = required.includes(field.dataset.field) ? '' : 'none';
+    });
+
+    form.addEventListener('submit', e => {
+      const mensajes = [];
+      required.forEach(name => {
+        const input = form.querySelector(`[name="${name}"]`);
+        if (!input.value.trim()) {
+          mensajes.push(`El campo "${name}" es obligatorio`);
+        }
+      });
+      if (mensajes.length) {
+        e.preventDefault();
+        alert(mensajes.join('\n'));
+      }
+    });
+  });
+</script>
+
+
+</body>
+
+</html>
