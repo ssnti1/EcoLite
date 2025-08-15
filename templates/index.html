@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="utf-8">
-  <title>EcoLite Reportes - Una sola página</title>
+  <title>Ecolite</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body {
@@ -14,14 +14,14 @@
     }
 
     nav {
-      background: #0ea5e9;
-      color: white;
+      background: #ffffff;
       padding: 10px 20px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       position: sticky;
-      top: 0
+      top: 0;
+      box-shadow: 0px 0px 5px black;
     }
 
     nav h1 {
@@ -43,7 +43,7 @@
     }
 
     nav button {
-      background: #0369a1;
+      background: #a2c037;
       color: white;
       border: none;
       padding: 8px 12px;
@@ -88,7 +88,7 @@
     }
 
     button.report {
-      background: #0ea5e9;
+      background: #a2c037;
       color: white;
       border: none;
       padding: 8px 14px;
@@ -103,21 +103,69 @@
       border-radius: 6px;
       margin-bottom: 12px
     }
+
+      .file-upload {
+    position: relative;
+    display: inline-block;
+    margin-top: 5px;
+  }
+  .file-upload input[type=file] {
+    position: absolute;
+    left: 0;
+    top: 0;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+  }
+  .file-upload-label {
+    background: white;
+    color: #333;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    display: inline-block;
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .btn-download {
+  display: inline-block;
+  background: #a2c037;
+  color: white;
+  padding: 6px 12px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 14px;
+}
+.btn-download:hover {
+  background: #779219; 
+}
+
   </style>
 </head>
 
 <body>
   <nav>
-    <h1>EcoLite Reportes</h1>
-    <form method="post" enctype="multipart/form-data">
-      <input type="hidden" name="accion" value="upload">
-      <input type="file" name="archivo" accept=".xlsx,.xls" required>
-      <button type="submit">Subir Archivo</button>
-    </form>
+    <div>
+      <img src="/static/logo-ecolite.png" alt="" style="width: 150px;">
+    </div>
+<form method="post" enctype="multipart/form-data">
+  <input type="hidden" name="accion" value="upload">
+
+  <div class="file-upload">
+    <span class="file-upload-label" id="fileLabel">Elegir archivo</span>
+    <input type="file" name="archivo" accept=".xlsx,.xls" required onchange="updateFileName(this)">
+  </div>
+
+  <button type="submit">Subir Archivo</button>
+</form>
   </nav>
   <main>
+
     {% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
-    <div>Estado: {% if has_excel %}✅ archivo cargado{% else %}⛔ sin archivo{% endif %}</div>
+    <div>{% if has_excel %}✅ archivo cargado{% else %}⛔ sin archivo{% endif %}</div>
+
 
     {% for val,label in available %}
     <div class="card">
@@ -128,54 +176,60 @@
         <div style="display:flex;flex-wrap:wrap;gap:10px">
           <div style="flex:1;min-width:120px" class="form-field" data-field="anio">
             <label>Año</label>
-            <input name="anio" placeholder="2025" >
+            <input name="anio" placeholder="2025">
           </div>
           <div style="flex:1;min-width:120px" class="form-field" data-field="mes_inicio">
             <label>Mes inicio</label>
-            <input name="mes_inicio" placeholder="1" >
+            <input name="mes_inicio" placeholder="1">
           </div>
           <div style="flex:1;min-width:120px" class="form-field" data-field="dia_inicio">
             <label>Día inicio</label>
-            <input name="dia_inicio" placeholder="1" >
+            <input name="dia_inicio" placeholder="1">
           </div>
           <div style="flex:1;min-width:120px" class="form-field" data-field="mes_fin">
             <label>Mes fin</label>
-            <input name="mes_fin" placeholder="12" >
+            <input name="mes_fin" placeholder="12">
           </div>
           <div style="flex:1;min-width:120px" class="form-field" data-field="dia_fin">
             <label>Día fin</label>
-            <input name="dia_fin" placeholder="31" >
+            <input name="dia_fin" placeholder="31">
           </div>
           <div style="flex:1;min-width:120px" class="form-field" data-field="top_vendedores">
             <label>Top vendedores</label>
-            <input name="top_vendedores" placeholder="10" >
+            <input name="top_vendedores" placeholder="10">
           </div>
           <div style="flex:1;min-width:120px" class="form-field" data-field="top_productos">
             <label>Top productos</label>
-            <input name="top_productos" placeholder="10" >
+            <input name="top_productos" placeholder="10">
           </div>
           <div style="flex:1;min-width:120px" class="form-field" data-field="top_departamentos">
             <label>Top departamentos</label>
-            <input name="top_departamentos" placeholder="10" >
+            <input name="top_departamentos" placeholder="10">
           </div>
           <div style="flex:1;min-width:120px" class="form-field" data-field="top_ciudades">
             <label>Top ciudades</label>
-            <input name="top_ciudades" placeholder="10" >
+            <input name="top_ciudades" placeholder="10">
           </div>
           <div style="flex:1;min-width:120px" class="form-field" data-field="top_n">
             <label>Top N (genérico)</label>
-            <input name="top_n" placeholder="10" >
+            <input name="top_n" placeholder="10">
           </div>
         </div>
         <button class="report" type="submit">Generar {{ label }}</button>
       </form>
+
       {% if outputs.get(val) %}
       <div class="outputs">
-        {% for path in outputs[val] %}
-        {% if path.endswith('.png') or path.endswith('.jpg') or path.endswith('.jpeg') %}
-        <img src="{{ url_for('static', filename=path) }}">
+        {% for filename, _ in outputs[val] %}
+        {% if filename.endswith('.png') or filename.endswith('.jpg') or filename.endswith('.jpeg') %}
+        <img src="{{ url_for('download_file', reporte=val, filename=filename) }}">
         {% else %}
-        <a href="{{ url_for('static', filename=path) }}" download>Descargar {{ path.rsplit('/',1)[-1] }}</a>
+<a href="{{ url_for('static', filename=path) }}" 
+   download 
+   class="btn-download">
+  📥 Descargar {{ filename }}
+</a>
+
         {% endif %}
         {% endfor %}
       </div>
@@ -184,36 +238,40 @@
     {% endfor %}
   </main>
 
-
-<script>
-  // Opción B: envolver en comillas y luego parsear
-  const reportFields = JSON.parse('{{ report_fields | tojson | safe }}');
-
-  document.querySelectorAll('.card form').forEach(form => {
-    const reporte = form.querySelector('input[name="reporte"]').value;
-    const required = reportFields[reporte] || [];
-
-    form.querySelectorAll('.form-field').forEach(field => {
-      field.style.display = required.includes(field.dataset.field) ? '' : 'none';
-    });
-
-    form.addEventListener('submit', e => {
-      const mensajes = [];
-      required.forEach(name => {
-        const input = form.querySelector(`[name="${name}"]`);
-        if (!input.value.trim()) {
-          mensajes.push(`El campo "${name}" es obligatorio`);
+  <script>
+    const reportFields = JSON.parse('{{ report_fields | tojson | safe }}');
+    document.querySelectorAll('.card form').forEach(form => {
+      const reporte = form.querySelector('input[name="reporte"]').value;
+      const required = reportFields[reporte] || [];
+      form.querySelectorAll('.form-field').forEach(field => {
+        field.style.display = required.includes(field.dataset.field) ? '' : 'none';
+      });
+      form.addEventListener('submit', e => {
+        const mensajes = [];
+        required.forEach(name => {
+          const input = form.querySelector(`[name="${name}"]`);
+          if (!input.value.trim()) {
+            mensajes.push(`El campo "${name}" es obligatorio`);
+          }
+        });
+        if (mensajes.length) {
+          e.preventDefault();
+          alert(mensajes.join('\n'));
         }
       });
-      if (mensajes.length) {
-        e.preventDefault();
-        alert(mensajes.join('\n'));
-      }
     });
-  });
+  </script>
+
+  <script>
+  function updateFileName(input) {
+    const label = document.getElementById('fileLabel');
+    if (input.files.length > 0) {
+      label.textContent = input.files[0].name;
+    } else {
+      label.textContent = 'Elegir archivo Excel';
+    }
+  }
 </script>
-
-
 </body>
 
 </html>
