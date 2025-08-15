@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, Tuple
 
+
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -521,7 +522,7 @@ def reporte_ventas_semana(excel_path: str, params: dict) -> Tuple[Optional[str],
     return None, xlsx_rel
 
 def reporte_presupuesto_anio(excel_path: str, params: dict) -> Tuple[Optional[str], Optional[str]]:
-    df = pd.read_excel(excel_path, sheet_name="Ppto anio", header=None)
+    df = pd.read_excel(excel_path, sheet_name="Ppto año", header=None)
     df = df.iloc[6:18, [3,4,5,6,7,8,9,10,11,12]]
     df.columns = [
         "Mes","2024","Acum 2024",
