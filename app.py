@@ -640,7 +640,7 @@ def index():
                 top_ciudades = request.form.get("top_ciudades") or "",
                 top_n = request.form.get("top_n") or "",
             )
-    try:
+    try: 
         result = run_report(selected, LATEST_EXCEL, params)
         if isinstance(result, tuple):
             files = [f for f in result if f]
