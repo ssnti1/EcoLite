@@ -37,8 +37,8 @@ AVAILABLE = {
     "reporte_ventas_semana": "Ventas por Semana",
     "reporte_presupuesto_año": "Presupuesto Año",
     "reporte_rotacion_inventario": "Rotación de Inventario",
-    "reporte_analisis_lista_inv_sin_venta": "Lista + Inventario > 0 sin ventas (Año)",
-    "reporte_pendientes_lista_precios": "Pendientes Lista de Precios (Año o Rango)"
+    "reporte_analisis_lista_inv_sin_venta": "Lista + Inventario + Venta",
+    "reporte_pendientes_lista_precios": "Pendientes Lista de Precios"
 }
 REPORT_FIELDS = {
     "reporte_vendedores": ["año"],
