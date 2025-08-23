@@ -1,7 +1,8 @@
-# -*- coding: utf-8 -*-
 import io
 import os
 from datetime import datetime
+import re
+import tempfile
 from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
@@ -14,19 +15,14 @@ from flask import (
     send_file, session
 )
 
-# ---- Flask setup ----
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "devkey-please-change")
 
-
-
-# --- Variables en memoria ---
 uploaded_excel_bytes: Optional[bytes] = None
-generated_reports = {}  # {reporte: [(filename, BytesIO), ...]}
+generated_reports = {}
 
 ALLOWED_EXT = {"xls", "xlsx"}
 
-# --- Configuración de reportes ---
 AVAILABLE = {
     "reporte_vendedores": "Ventas por Vendedor",
     "reporte_margen_vendedores": "Margen por Vendedor",
@@ -39,26 +35,35 @@ AVAILABLE = {
     "reporte_comparativo_departamento": "Comparativo Departamento",
     "reporte_comparativo_linea": "Comparativo Línea",
     "reporte_ventas_semana": "Ventas por Semana",
-    "reporte_presupuesto_anio": "Presupuesto Año",
-    "reporte_rotacion_inventario": "Rotación de Inventario"
+    "reporte_presupuesto_año": "Presupuesto Año",
+    "reporte_rotacion_inventario": "Rotación de Inventario",
+    "reporte_analisis_lista_inv_sin_venta": "Lista + Inventario > 0 sin ventas (Año)",
+    "reporte_pendientes_lista_precios": "Pendientes Lista de Precios (Año o Rango)"
 }
 REPORT_FIELDS = {
-    "reporte_vendedores": ["anio"],
-    "reporte_margen_vendedores": ["anio"],
-    "reporte_margen_productos": ["anio", "mes_inicio", "dia_inicio", "mes_fin", "dia_fin", "top_n"],
-    "reporte_producto_volumen_margen": ["anio", "mes_inicio", "dia_inicio", "mes_fin", "dia_fin", "top_n"],
-    "reporte_top_ciudades": ["anio", "top_n"],
-    "reporte_top_departamentos": ["anio", "top_n"],
+    "reporte_vendedores": ["año"],
+    "reporte_margen_vendedores": ["año"],
+    "reporte_margen_productos": ["año", "mes_inicio", "dia_inicio", "mes_fin", "dia_fin", "top_n"],
+    "reporte_producto_volumen_margen": ["año", "mes_inicio", "dia_inicio", "mes_fin", "dia_fin", "top_n"],
+    "reporte_top_ciudades": ["año", "top_n"],
+    "reporte_top_departamentos": ["año", "top_n"],
     "reporte_comparativo_vendedor": [],
     "reporte_comparativo_ciudad": [],
     "reporte_comparativo_departamento": [],
     "reporte_comparativo_linea": [],
     "reporte_ventas_semana": [],
-    "reporte_presupuesto_anio": [],
-    "reporte_rotacion_inventario": []
+    "reporte_presupuesto_año": [],
+    "reporte_rotacion_inventario": [],
+    "reporte_analisis_lista_inv_sin_venta": ["año", "lista"],
+    "reporte_pendientes_lista_precios": ["lista"]
 }
 
-# --- Utilidades ---
+def _normalizar_cols(dff: pd.DataFrame) -> pd.DataFrame:
+    dff = dff.copy()
+    dff.columns = dff.columns.astype(str).str.strip().str.upper().str.replace('\xa0', '', regex=True)
+    return dff
+
+
 def read_facturacion(excel_bytes: bytes) -> pd.DataFrame:
     df = pd.read_excel(io.BytesIO(excel_bytes), sheet_name="Facturacion")
     df.columns = df.columns.str.strip().str.upper().str.replace('\xa0', '', regex=True)
@@ -83,16 +88,14 @@ def save_figure(fig, name: str):
     return (f"{name}.png", buf)
 
 def maybe_add_logo(ax):
-    # puedes eliminarlo o adaptarlo a memoria si quieres
     pass
 
-# --- Reportes ---
-def reporte_vendedores(excel_bytes: bytes, anio: int):
+def reporte_vendedores(excel_bytes: bytes, año: int):
     excluir = ["ARANGO JULIO CESAR", "LOPEZ GAITAN JORGE HERNAN", "Sin vendedor"]
     df = read_facturacion(excel_bytes)
-    df = df[(df["FECHA"].dt.year == anio) & (~df["VENDEDOR"].isin(excluir))]
+    df = df[(df["FECHA"].dt.year == año) & (~df["VENDEDOR"].isin(excluir))]
     if df.empty:
-        raise ValueError(f"No hay datos para el año {anio}.")
+        raise ValueError(f"No hay datos para el año {año}.")
     reporte = df.groupby('VENDEDOR', as_index=False)['NETO'].sum().sort_values('NETO', ascending=False)
     total = reporte['NETO'].sum()
 
@@ -100,21 +103,21 @@ def reporte_vendedores(excel_bytes: bytes, anio: int):
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.barh(reporte['VENDEDOR'], reporte['NETO'])
     ax.invert_yaxis()
-    ax.set_title(f"Ventas por Vendedor - {anio} | Total: ${total:,.0f}", fontsize=14, fontweight="bold")
+    ax.set_title(f"Ventas por Vendedor - {año} | Total: ${total:,.0f}", fontsize=14, fontweight="bold")
     ax.set_xlabel("Valor vendido ($)")
     for i, v in enumerate(reporte["NETO"]):
         ax.text(v + (reporte["NETO"].max() * 0.01), i, f"${v:,.0f}", va="center", fontsize=9)
-    img_file = save_figure(fig, f"vendedores_{anio}")
-    xlsx_file = save_dataframe_xlsx(reporte, f"vendedores_{anio}")
+    img_file = save_figure(fig, f"vendedores_{año}")
+    xlsx_file = save_dataframe_xlsx(reporte, f"vendedores_{año}")
     return [img_file, xlsx_file]
 
-def reporte_margen_vendedores(excel_bytes: bytes, anio: int):
+def reporte_margen_vendedores(excel_bytes: bytes, año: int):
     excluir = ["ARANGO JULIO CESAR", "LOPEZ GAITAN JORGE HERNAN", "Sin vendedor"]
     df = read_facturacion(excel_bytes)
-    df = df[df["FECHA"].dt.year == anio]
+    df = df[df["FECHA"].dt.year == año]
     df = df[~df["VENDEDOR"].isin(excluir)].copy()
     if df.empty:
-        raise ValueError(f"No hay datos para el año {anio}.")
+        raise ValueError(f"No hay datos para el año {año}.")
     df["COSTO_TOTAL"] = df["COST"] * df["QTYSHIP"]
     reporte = (
         df.groupby('VENDEDOR', as_index=False)
@@ -127,24 +130,22 @@ def reporte_margen_vendedores(excel_bytes: bytes, anio: int):
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.barh(reporte['VENDEDOR'], reporte['MARGEN_%'])
     ax.invert_yaxis()
-    ax.set_title(f"Margen por Vendedor (%) - {anio}", fontsize=14, fontweight="bold")
+    ax.set_title(f"Margen por Vendedor (%) - {año}", fontsize=14, fontweight="bold")
     ax.set_xlabel("Margen (%)")
     for i, v in enumerate(reporte["MARGEN_%"]):
         ax.text(v + 0.5, i, f"{v:.1f}%", va="center", fontsize=9)
-    img_file = save_figure(fig, f"margen_vendedores_{anio}")
-    xlsx_file = save_dataframe_xlsx(reporte, f"margen_vendedores_{anio}")
+    img_file = save_figure(fig, f"margen_vendedores_{año}")
+    xlsx_file = save_dataframe_xlsx(reporte, f"margen_vendedores_{año}")
     return [img_file, xlsx_file]
 
-# aquí seguirán todos los demás reportes adaptados...
-# ---- FIN PARTE 1 ----
-def _filtrar_fecha(df: pd.DataFrame, anio:int, mes_i:int, dia_i:int, mes_f:int, dia_f:int) -> pd.DataFrame:
-    fi = datetime(anio, mes_i, dia_i)
-    ff = datetime(anio, mes_f, dia_f)
+def _filtrar_fecha(df: pd.DataFrame, año:int, mes_i:int, dia_i:int, mes_f:int, dia_f:int) -> pd.DataFrame:
+    fi = datetime(año, mes_i, dia_i)
+    ff = datetime(año, mes_f, dia_f)
     return df[(df["FECHA"] >= fi) & (df["FECHA"] <= ff)].copy()
 
-def reporte_margen_productos(excel_bytes: bytes, anio:int, mes_i:int, dia_i:int, mes_f:int, dia_f:int, top_n:int):
+def reporte_margen_productos(excel_bytes: bytes, año:int, mes_i:int, dia_i:int, mes_f:int, dia_f:int, top_n:int):
     df = read_facturacion(excel_bytes)
-    df = _filtrar_fecha(df, anio, mes_i, dia_i, mes_f, dia_f)
+    df = _filtrar_fecha(df, año, mes_i, dia_i, mes_f, dia_f)
     df["ITEM"] = df["ITEM"].astype(str).str.strip().str.upper()
     patron_excluir = "FLETE|MANTENIMIENTO|DF-DISEÑO|DISEÑO"
     df = df[~df["ITEM"].str.contains(patron_excluir, case=False, na=False, regex=True)]
@@ -167,9 +168,9 @@ def reporte_margen_productos(excel_bytes: bytes, anio:int, mes_i:int, dia_i:int,
     xlsx_file = save_dataframe_xlsx(top_df, "margen_productos")
     return [img_file, xlsx_file]
 
-def reporte_producto_volumen_margen(excel_bytes: bytes, anio:int, mes_i:int, dia_i:int, mes_f:int, dia_f:int, top_n:int):
+def reporte_producto_volumen_margen(excel_bytes: bytes, año:int, mes_i:int, dia_i:int, mes_f:int, dia_f:int, top_n:int):
     df = read_facturacion(excel_bytes)
-    df = _filtrar_fecha(df, anio, mes_i, dia_i, mes_f, dia_f)
+    df = _filtrar_fecha(df, año, mes_i, dia_i, mes_f, dia_f)
     df["ITEM"] = df["ITEM"].astype(str).str.strip().str.upper()
     patron_excluir = "FLETE|MANTENIMIENTO|DF-DISEÑO|DISEÑO"
     df = df[~df["ITEM"].str.contains(patron_excluir, case=False, na=False, regex=True)]
@@ -200,32 +201,32 @@ def reporte_producto_volumen_margen(excel_bytes: bytes, anio:int, mes_i:int, dia
     xlsx_file = save_dataframe_xlsx(top_df, "producto_valor_margen")
     return [img_file, xlsx_file]
 
-def _top_group(excel_bytes: bytes, anio:int, group_col:str, top_n:int, titulo_prefix:str):
+def _top_group(excel_bytes: bytes, año:int, group_col:str, top_n:int, titulo_prefix:str):
     df = read_facturacion(excel_bytes)
-    df = df[df["FECHA"].dt.year == anio].copy()
+    df = df[df["FECHA"].dt.year == año].copy()
     if df.empty:
-        raise ValueError(f"No hay datos para el año {anio}.")
+        raise ValueError(f"No hay datos para el año {año}.")
     rep = (df.groupby(group_col)["NETO"].sum().sort_values(ascending=False).head(top_n))
     total = rep.sum()
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.barh(rep.index, rep.values)
     ax.invert_yaxis()
-    ax.set_title(f"{titulo_prefix} {anio} (${total:,.0f})", fontsize=14, fontweight="bold")
+    ax.set_title(f"{titulo_prefix} {año} (${total:,.0f})", fontsize=14, fontweight="bold")
     ax.set_xlabel("Valor facturado ($)")
+
     for i, v in enumerate(rep.values):
         ax.text(v + (rep.values.max()*0.01), i, f"${v:,.0f}", va="center", fontsize=9)
-    img_file = save_figure(fig, f"top_{group_col.lower()}_{anio}")
-    xlsx_file = save_dataframe_xlsx(rep.reset_index(name="TOTAL_FACTURACION"), f"top_{group_col.lower()}_{anio}")
+    img_file = save_figure(fig, f"top_{group_col.lower()}_{año}")
+    xlsx_file = save_dataframe_xlsx(rep.reset_index(name="TOTAL_FACTURACION"), f"top_{group_col.lower()}_{año}")
     return [img_file, xlsx_file]
 
-def reporte_top_ciudades(excel_bytes, anio:int, top_n:int):
-    return _top_group(excel_bytes, anio, "CITY", top_n, "Top Ciudades - Facturación")
+def reporte_top_ciudades(excel_bytes, año:int, top_n:int):
+    return _top_group(excel_bytes, año, "CITY", top_n, "Top Ciudades - Facturación")
 
-def reporte_top_departamentos(excel_bytes, anio:int, top_n:int):
-    return _top_group(excel_bytes, anio, "DEPARTAMENTO", top_n, "Top Departamentos - Facturación")
+def reporte_top_departamentos(excel_bytes, año:int, top_n:int):
+    return _top_group(excel_bytes, año, "DEPARTAMENTO", top_n, "Top Departamentos - Facturación")
 
-# ---- FIN PARTE 2 ----
 def _comparativo_generico(excel_bytes: bytes, eje: str):
     df = read_facturacion(excel_bytes)
     hoy = datetime.today()
@@ -290,19 +291,19 @@ def reporte_ventas_semana(excel_bytes, params):
         return (desplaz // 7) + 1
 
     df["SEMANA_MES"] = df["FECHA"].apply(semana_del_mes)
-    df["anio"] = df["FECHA"].dt.year
+    df["año"] = df["FECHA"].dt.year
     meses_ord = list(meses_map.values())
     max_semana = int(df["SEMANA_MES"].max())
     semanas = list(range(1, max_semana + 1))
     bloques = []
     for anyo in [anyo_actual, anyo_full]:
-        df_a = df[df["anio"] == anyo]
+        df_a = df[df["año"] == anyo]
         if df_a.empty:
             continue
         pivot = (df_a.pivot_table(index="SEMANA_MES", columns="MES", values="NETO", aggfunc="sum", fill_value=0)
                       .reindex(index=semanas, columns=meses_ord, fill_value=0))
         pivot["Total"] = pivot.sum(axis=1)
-        pivot.insert(0, "anio", anyo)
+        pivot.insert(0, "año", anyo)
         pivot.insert(1, "Semana", pivot.index)
         bloques.append(pivot.reset_index(drop=True))
     if not bloques:
@@ -311,8 +312,8 @@ def reporte_ventas_semana(excel_bytes, params):
     xlsx_file = save_dataframe_xlsx(salida, "ventas_semana")
     return [xlsx_file]
 
-def reporte_presupuesto_anio(excel_bytes, params):
-    df = pd.read_excel(io.BytesIO(excel_bytes), sheet_name="Ppto anio", header=None)
+def reporte_presupuesto_año(excel_bytes, params):
+    df = pd.read_excel(io.BytesIO(excel_bytes), sheet_name="Ppto año", header=None)
     df = df.iloc[6:18, [3,4,5,6,7,8,9,10,11,12]]
     df.columns = [
         "Mes","2024","Acum 2024",
@@ -325,25 +326,377 @@ def reporte_presupuesto_anio(excel_bytes, params):
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
     for col in ["% Cumpl Mes","Acum 2025 vs Acum 2024","Acum 2025 vs Ppto Acum 2025"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    xlsx_file = save_dataframe_xlsx(df, "presupuesto_anio")
+    xlsx_file = save_dataframe_xlsx(df, "presupuesto_año")
     return [xlsx_file]
 
-# ---- Ejecutar reportes ----
+def extraer_lista_precios_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
+    try:
+        from PyPDF2 import PdfReader
+    except Exception:
+        raise RuntimeError("Instala PyPDF2:  pip install PyPDF2")
+
+    rows = []
+    patron = re.compile(r"^([A-Z0-9\-\/\.]+)\s+(.*?)\s*\$\s*([\d\.\,]+)\s*$")
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        for line in text.split("\n"):
+            m = patron.search(line.strip())
+            if not m:
+                continue
+            item = m.group(1).strip().upper()
+            desc = m.group(2).strip()
+            precio = m.group(3).strip().replace(".", "").replace(",", ".")
+            try:
+                precio = float(precio)
+            except:
+                precio = None
+            rows.append([item, desc, precio])
+
+    df = pd.DataFrame(rows, columns=["ITEM", "DESCRIPCION_LISTA", "PRECIO_LISTA"])
+    if not df.empty:
+        df["ITEM"] = df["ITEM"].astype(str).str.strip().str.upper()
+    return df
+
+# --- reporte: Lista + Inventario > 0 SIN ventas (estilo Flask) ---
+def reporte_analisis_lista_inv_sin_venta(excel_bytes: bytes, params: dict):
+    """
+    Ítems que:
+      (1) Están en la lista de precios (archivo 'lista' en el form),
+      (2) Tienen inventario > 0 (hoja 'Inventario SAI' C7:E1200),
+      (3) NO fueron facturados en el año elegido (hoja 'Facturacion').
+
+    Devuelve: [("analisis_lista_inv_sin_venta_YYYY.xlsx", buffer)]
+    Requiere en el request: <input type="file" name="lista"> (xlsx/xls/csv/pdf)
+    Parámetros: params['año'] o params['anio']
+    """
+    # --- año ---
+    anio_str = (params.get("año") or params.get("anio") or "").strip()
+    try:
+        anio = int(anio_str)
+    except:
+        raise ValueError("Parámetro 'año'/'anio' inválido.")
+
+    # --- cargar Facturacion desde bytes (como tus otros reportes) ---
+    df_fac = pd.read_excel(io.BytesIO(excel_bytes), sheet_name="Facturacion")
+    df_fac.columns = df_fac.columns.str.strip().str.upper().str.replace('\xa0', '', regex=True)
+    req_fac = {"ITEM", "FECHA", "QTYSHIP"}
+    faltan = req_fac - set(df_fac.columns)
+    if faltan:
+        raise ValueError(f"Faltan columnas en 'Facturacion': {faltan}")
+
+    df_fac = df_fac.dropna(subset=["ITEM", "FECHA"]).copy()
+    df_fac["ITEM"] = df_fac["ITEM"].astype(str).str.strip().str.upper()
+    df_fac["FECHA"] = pd.to_datetime(df_fac["FECHA"], errors="coerce")
+    df_fac["QTYSHIP"] = pd.to_numeric(df_fac["QTYSHIP"], errors="coerce").fillna(0)
+    df_fac_anio = df_fac[df_fac["FECHA"].dt.year == anio]
+    vendidos = set(df_fac_anio.loc[df_fac_anio["QTYSHIP"] > 0, "ITEM"].unique())
+
+    # --- cargar Inventario (C7:E1200) ---
+    df_inv = pd.read_excel(io.BytesIO(excel_bytes), sheet_name="Inventario SAI", header=None)
+    df_inv = df_inv.iloc[6:1200, 2:5].copy()
+    df_inv.columns = ["ITEM", "OTRA_COL", "INVENTARIO"]
+    df_inv["ITEM"] = df_inv["ITEM"].astype(str).str.strip().str.upper()
+    df_inv["INVENTARIO"] = pd.to_numeric(df_inv["INVENTARIO"], errors="coerce").fillna(0)
+    df_inv_pos = df_inv[df_inv["INVENTARIO"] > 0][["ITEM", "INVENTARIO"]].drop_duplicates("ITEM")
+
+    # --- leer lista de precios desde request.files['lista'] ---
+    fs = request.files.get("lista")
+    if not fs or not fs.filename:
+        raise ValueError("Adjunta la lista de precios como archivo 'lista' (xlsx/xls/csv/pdf).")
+
+    filename = fs.filename.lower()
+    ext = os.path.splitext(filename)[1]
+    def _norm(dff: pd.DataFrame) -> pd.DataFrame:
+        dff = dff.copy()
+        dff.columns = dff.columns.astype(str).str.strip().str.upper()
+        return dff
+
+    if ext in [".xlsx", ".xls"]:
+        xls_bytes = fs.read()
+        xls = pd.ExcelFile(io.BytesIO(xls_bytes))
+        hojas = []
+        for sn in xls.sheet_names:
+            try:
+                hojas.append(_norm(pd.read_excel(xls, sn)))
+            except Exception:
+                pass
+        df_lista_raw = pd.concat(hojas, ignore_index=True) if hojas else pd.DataFrame()
+
+    elif ext == ".csv":
+        csv_bytes = fs.read()
+        df_lista_raw = pd.read_csv(io.BytesIO(csv_bytes), encoding="utf-8", sep=None, engine="python")
+
+    elif ext == ".pdf":
+        fs.stream.seek(0)
+        pdf_bytes = fs.read()            # ← bytes del PDF
+        df_lista_raw = extraer_lista_precios_pdf_bytes(pdf_bytes)
+
+
+    else:
+        raise ValueError("Formato de lista no soportado. Usa xlsx/xls/csv/pdf.")
+
+    if df_lista_raw is None or df_lista_raw.empty:
+        # devolver archivo vacío con headers esperados
+        cols_out = ["ITEM", "DESCRIPCION_LISTA", "PRECIO_LISTA", "INVENTARIO"]
+        return [save_dataframe_xlsx(pd.DataFrame(columns=cols_out), f"analisis_lista_inv_sin_venta_{anio}")]
+
+    # --- mapear columnas ITEM / PRECIO / DESCRIPCION ---
+    candidatos_item = {"ITEM", "CODIGO", "CÓDIGO", "SKU", "REFERENCIA"}
+    candidatos_precio = {"PRECIO", "PRECIO_LISTA", "PRICE", "PVP", "VALOR", "LISTA", "PRECIO UNITARIO"}
+    candidatos_desc = {"DESCRIPCION", "DESCRIPCIÓN", "NOMBRE", "PRODUCTO", "DETALLE"}
+
+    def pick_col(cands, cols):
+        for c in cols:
+            if c in cands: return c
+        for c in cols:
+            for k in cands:
+                if k in c: return c
+        return None
+
+    cols = list(df_lista_raw.columns)
+    col_item  = pick_col(candidatos_item, cols)
+    col_prec  = pick_col(candidatos_precio, cols)
+    col_desc  = pick_col(candidatos_desc, cols)
+    if not col_item:
+        raise ValueError("No encontré columna de ITEM en la lista de precios.")
+
+    keep = [col_item] + ([col_prec] if col_prec else []) + ([col_desc] if col_desc else [])
+    df_lista = df_lista_raw[keep].copy()
+    new_cols = ["ITEM"] + (["PRECIO_LISTA"] if col_prec else []) + (["DESCRIPCION_LISTA"] if col_desc else [])
+    df_lista.columns = new_cols
+
+    df_lista["ITEM"] = df_lista["ITEM"].astype(str).str.strip().str.upper()
+    if "PRECIO_LISTA" in df_lista.columns:
+        df_lista["PRECIO_LISTA"] = (
+            df_lista["PRECIO_LISTA"].astype(str)
+            .str.replace(r"[^\d,.\-]", "", regex=True)
+            .str.replace(",", ".", regex=False)
+        )
+        df_lista["PRECIO_LISTA"] = pd.to_numeric(df_lista["PRECIO_LISTA"], errors="coerce")
+    if "DESCRIPCION_LISTA" not in df_lista.columns:
+        df_lista["DESCRIPCION_LISTA"] = ""
+    df_lista = df_lista.dropna(subset=["ITEM"]).drop_duplicates("ITEM", keep="first")
+
+    # --- lógica principal ---
+    base = pd.merge(df_lista, df_inv_pos, on="ITEM", how="inner")
+    sin_venta = base[~base["ITEM"].isin(vendidos)].copy()
+
+    # --- salida XLSX ---
+    for c in ["DESCRIPCION_LISTA", "PRECIO_LISTA", "INVENTARIO"]:
+        if c not in sin_venta.columns:
+            sin_venta[c] = None
+    cols_out = ["ITEM", "DESCRIPCION_LISTA", "PRECIO_LISTA", "INVENTARIO"]
+    sin_venta = sin_venta[cols_out]
+
+    return [save_dataframe_xlsx(sin_venta, f"analisis_lista_inv_sin_venta_{anio}")]
+
+def reporte_pendientes_lista_precios(excel_bytes: bytes, params: dict):
+    """
+    Compara la ÚLTIMA venta por ITEM (precio unitario = NETO/QTYSHIP) contra la lista vigente.
+    Exporta un Excel con columnas:
+      ITEM, DESCRIPCION_VENTA, FECHA_ULT_VENTA, PRECIO_FACTURADO,
+      PRECIO_LISTA, DIFERENCIA, DESCRIPCION_LISTA, ESTADO
+
+    Requiere: request.files['lista'] (xlsx/xls/csv/pdf).
+    Devuelve: [("pendientes_lista_precios.xlsx", BytesIO)]
+    """
+    # ---------- 1) FACTURACIÓN: última venta por ITEM ----------
+    df_fac = pd.read_excel(io.BytesIO(excel_bytes), sheet_name="Facturacion")
+    df_fac = _normalizar_cols(df_fac)
+
+    req = {"ITEM", "DESCRIPCION", "FECHA", "NETO", "QTYSHIP"}
+    faltan = req - set(df_fac.columns)
+    if faltan:
+        raise ValueError(f"Faltan columnas en 'Facturacion': {faltan}")
+
+    df_fac = df_fac.dropna(subset=["ITEM", "FECHA"]).copy()
+    df_fac["ITEM"] = df_fac["ITEM"].astype(str).str.strip().str.upper()
+    df_fac["DESCRIPCION"] = df_fac["DESCRIPCION"].astype(str).str.strip()
+    df_fac["FECHA"] = pd.to_datetime(df_fac["FECHA"], errors="coerce")
+    df_fac["NETO"] = pd.to_numeric(df_fac["NETO"], errors="coerce")
+    df_fac["QTYSHIP"] = pd.to_numeric(df_fac["QTYSHIP"], errors="coerce")
+
+    # evitar divisiones inválidas
+    df_fac = df_fac[(df_fac["QTYSHIP"] > 0) & (df_fac["NETO"].notna())].copy()
+    df_fac["PRECIO_UNIT"] = df_fac["NETO"] / df_fac["QTYSHIP"]
+
+    # última fila por ITEM (por fecha)
+    df_fac = df_fac.sort_values(["ITEM", "FECHA"])
+    ultimos = (df_fac.drop_duplicates("ITEM", keep="last")
+                     .loc[:, ["ITEM", "DESCRIPCION", "FECHA", "PRECIO_UNIT"]]
+                     .rename(columns={
+                         "DESCRIPCION": "DESCRIPCION_VENTA",
+                         "FECHA": "FECHA_ULT_VENTA",
+                         "PRECIO_UNIT": "PRECIO_FACTURADO"
+                     }))
+
+    # ---------- 2) LISTA vigente desde request.files['lista'] ----------
+    df_lista = _leer_lista_precios_desde_request()  # debe devolver ITEM, PRECIO_LISTA y opcional DESCRIPCION_LISTA
+    if "PRECIO_LISTA" not in df_lista.columns:
+        raise ValueError("La lista no tiene columna de precio reconocible (PRECIO_LISTA). "
+                         "Usa un Excel/CSV con precio o un PDF que incluya precios legibles.")
+
+    # asegurar columnas que usaremos
+    if "DESCRIPCION_LISTA" not in df_lista.columns:
+        df_lista["DESCRIPCION_LISTA"] = ""
+
+    # ---------- 3) Cruce y cálculo de estado ----------
+    base = ultimos.merge(df_lista[["ITEM", "PRECIO_LISTA", "DESCRIPCION_LISTA"]],
+                         on="ITEM", how="left", validate="one_to_one")
+    base["DIFERENCIA"] = base["PRECIO_FACTURADO"] - base["PRECIO_LISTA"]
+
+    tol_pct = 0.01  # 1%
+    def _estado(row):
+        pf, pl = row["PRECIO_FACTURADO"], row["PRECIO_LISTA"]
+        if pd.isna(pl):
+            return "No está en lista"
+        if pd.isna(pf) and pd.isna(pl):
+            return "OK"
+        if (pl or 0) == 0:
+            return "Precio distinto" if (pf or 0) != 0 else "OK"
+        rel = abs((pf or 0) - (pl or 0)) / max(abs(pl), 1e-9)
+        return "Precio distinto" if rel > tol_pct else "OK"
+
+    base["ESTADO"] = base.apply(_estado, axis=1)
+
+    pendientes = base[base["ESTADO"].isin(["No está en lista", "Precio distinto"])].copy()
+    pendientes["ORD"] = pendientes["ESTADO"].map({"No está en lista": 0, "Precio distinto": 1})
+    pendientes = pendientes.sort_values(["ORD", "DIFERENCIA"], ascending=[True, False]).drop(columns=["ORD"])
+
+    # ---------- 4) Exportar con las MISMAS columnas que el original ----------
+    cols_out = [
+        "ITEM", "DESCRIPCION_VENTA", "FECHA_ULT_VENTA",
+        "PRECIO_FACTURADO", "PRECIO_LISTA", "DIFERENCIA",
+        "DESCRIPCION_LISTA", "ESTADO"
+    ]
+
+    # si no hay pendientes, exportar headers vacíos
+    if pendientes.empty:
+        empty = pd.DataFrame(columns=cols_out)
+        return [save_dataframe_xlsx(empty, "pendientes_lista_precios")]
+
+    # Formato bonito (opcional, como el original)
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+        pendientes.to_excel(writer, index=False, sheet_name="Pendientes", columns=cols_out)
+
+        wb = writer.book
+        ws = writer.sheets["Pendientes"]
+        money = wb.add_format({"num_format": '"$"#,##0.00'})
+        datef = wb.add_format({"num_format": "yyyy-mm-dd"})
+        header = wb.add_format({"bold": True, "bg_color": "#FFE699"})
+
+        # header y tamaños
+        for c, name in enumerate(cols_out):
+            ws.write(0, c, name, header)
+        widths = [18, 38, 15, 16, 16, 14, 38, 18]
+        for i, w in enumerate(widths):
+            ws.set_column(i, i, w)
+        ws.set_column(2, 2, 15, datef)      # FECHA_ULT_VENTA
+        for col in [3, 4, 5]:               # precios y diferencia
+            ws.set_column(col, col, 16, money)
+
+    out.seek(0)
+    return [("pendientes_lista_precios.xlsx", out)]
+
+def _leer_lista_precios_desde_request() -> pd.DataFrame:
+    """
+    Lee la lista de precios desde request.files['lista'] (xlsx/xls/csv/pdf)
+    y devuelve DF con columnas: ITEM, DESCRIPCION_LISTA, PRECIO_LISTA (si existe).
+    """
+    fs = request.files.get("lista")
+    if not fs or not fs.filename:
+        raise ValueError("Adjunta la lista de precios como archivo 'lista' (xlsx/xls/csv/pdf).")
+
+    filename = fs.filename.lower()
+    ext = os.path.splitext(filename)[1]
+
+    # --- Leer a DataFrame bruto según extensión ---
+    if ext in [".xlsx", ".xls"]:
+        xls_bytes = fs.read()  # lee una sola vez
+        xls = pd.ExcelFile(io.BytesIO(xls_bytes))
+        hojas = []
+        for sn in xls.sheet_names:
+            try:
+                hojas.append(_normalizar_cols(pd.read_excel(xls, sn)))
+            except Exception:
+                pass
+        df_lista_raw = pd.concat(hojas, ignore_index=True) if hojas else pd.DataFrame()
+
+    elif ext == ".csv":
+        csv_bytes = fs.read()  # lee una sola vez
+        df_lista_raw = pd.read_csv(io.BytesIO(csv_bytes), encoding="utf-8", sep=None, engine="python")
+        df_lista_raw = _normalizar_cols(df_lista_raw)
+
+    elif ext == ".pdf":
+        pdf_bytes = fs.read()  # lee una sola vez
+        df_lista_raw = extraer_lista_precios_pdf_bytes(pdf_bytes)
+
+    else:
+        raise ValueError("Formato de lista no soportado. Usa xlsx/xls/csv/pdf.")
+
+    if df_lista_raw is None or df_lista_raw.empty:
+        raise ValueError("No pude leer una tabla válida desde la lista de precios.")
+
+    # --- Mapear columnas a ITEM / PRECIO_LISTA / DESCRIPCION_LISTA ---
+    candidatos_item   = {"ITEM","CODIGO","CÓDIGO","SKU","REFERENCIA"}
+    candidatos_precio = {"PRECIO","PRECIO_LISTA","PRICE","PVP","VALOR","LISTA","PRECIO UNITARIO"}
+    candidatos_desc   = {"DESCRIPCION","DESCRIPCIÓN","NOMBRE","PRODUCTO","DETALLE"}
+
+    cols = list(df_lista_raw.columns)
+
+    def pick_col(cands, cols):
+        for c in cols:
+            if c in cands: return c
+        for c in cols:
+            for k in cands:
+                if k in c: return c
+        return None
+
+    col_item = pick_col(candidatos_item, cols)
+    col_prec = pick_col(candidatos_precio, cols)
+    col_desc = pick_col(candidatos_desc, cols)
+
+    if not col_item:
+        raise ValueError("No se encontró columna de ITEM en la lista.")
+
+    keep = [col_item] + ([col_prec] if col_prec else []) + ([col_desc] if col_desc else [])
+    df_lista = df_lista_raw[keep].copy()
+    new_cols = ["ITEM"] + (["PRECIO_LISTA"] if col_prec else []) + (["DESCRIPCION_LISTA"] if col_desc else [])
+    df_lista.columns = new_cols
+
+    df_lista["ITEM"] = df_lista["ITEM"].astype(str).str.strip().str.upper()
+    if "PRECIO_LISTA" in df_lista.columns:
+        df_lista["PRECIO_LISTA"] = (
+            df_lista["PRECIO_LISTA"].astype(str)
+            .str.replace(r"[^\d,.\-]", "", regex=True)
+            .str.replace(",", ".", regex=False)
+        )
+        df_lista["PRECIO_LISTA"] = pd.to_numeric(df_lista["PRECIO_LISTA"], errors="coerce")
+
+    if "DESCRIPCION_LISTA" not in df_lista.columns:
+        df_lista["DESCRIPCION_LISTA"] = ""
+
+    df_lista = df_lista.dropna(subset=["ITEM"]).drop_duplicates(subset=["ITEM"], keep="first")
+    return df_lista
+
+
 def run_report(reporte, excel_bytes, params):
     if reporte == "reporte_vendedores":
-        return reporte_vendedores(excel_bytes, int(params["anio"]))
+        return reporte_vendedores(excel_bytes, int(params["año"]))
     elif reporte == "reporte_margen_vendedores":
-        return reporte_margen_vendedores(excel_bytes, int(params["anio"]))
+        return reporte_margen_vendedores(excel_bytes, int(params["año"]))
     elif reporte == "reporte_margen_productos":
-        return reporte_margen_productos(excel_bytes, int(params["anio"]), int(params["mes_inicio"]),
+        return reporte_margen_productos(excel_bytes, int(params["año"]), int(params["mes_inicio"]),
                                         int(params["dia_inicio"]), int(params["mes_fin"]), int(params["dia_fin"]), int(params["top_n"]))
     elif reporte == "reporte_producto_volumen_margen":
-        return reporte_producto_volumen_margen(excel_bytes, int(params["anio"]), int(params["mes_inicio"]),
+        return reporte_producto_volumen_margen(excel_bytes, int(params["año"]), int(params["mes_inicio"]),
                                                int(params["dia_inicio"]), int(params["mes_fin"]), int(params["dia_fin"]), int(params["top_n"]))
     elif reporte == "reporte_top_ciudades":
-        return reporte_top_ciudades(excel_bytes, int(params["anio"]), int(params["top_n"]))
+        return reporte_top_ciudades(excel_bytes, int(params["año"]), int(params["top_n"]))
     elif reporte == "reporte_top_departamentos":
-        return reporte_top_departamentos(excel_bytes, int(params["anio"]), int(params["top_n"]))
+        return reporte_top_departamentos(excel_bytes, int(params["año"]), int(params["top_n"]))
     elif reporte == "reporte_comparativo_vendedor":
         return reporte_comparativo_vendedor(excel_bytes, params)
     elif reporte == "reporte_comparativo_ciudad":
@@ -354,11 +707,15 @@ def run_report(reporte, excel_bytes, params):
         return reporte_comparativo_linea(excel_bytes, params)
     elif reporte == "reporte_ventas_semana":
         return reporte_ventas_semana(excel_bytes, params)
-    elif reporte == "reporte_presupuesto_anio":
-        return reporte_presupuesto_anio(excel_bytes, params)
+    elif reporte == "reporte_presupuesto_año":
+        return reporte_presupuesto_año(excel_bytes, params)
+    elif reporte == "reporte_analisis_lista_inv_sin_venta":
+        return reporte_analisis_lista_inv_sin_venta(excel_bytes, params)
+    elif reporte == "reporte_pendientes_lista_precios":
+        return reporte_pendientes_lista_precios(excel_bytes, params)
+
     else:
         raise ValueError(f"Reporte desconocido: {reporte}")
-
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -392,7 +749,6 @@ def index():
                     session['notice'] = f"Error: {e}"
             return redirect(url_for("index"))
 
-    # Solo llega aquí si es GET
     return render_template(
         "index.html",
         available=AVAILABLE.items(),
@@ -401,8 +757,6 @@ def index():
         outputs=generated_reports,
         report_fields=REPORT_FIELDS
     )
-
-
 
 @app.route("/download/<reporte>/<filename>")
 def download_file(reporte, filename):
@@ -413,4 +767,4 @@ def download_file(reporte, filename):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=True)
-# ---- FIN PARTE 3 ----
+
