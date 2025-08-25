@@ -6,3 +6,4 @@ xlsxwriter
 numpy
 gunicorn
 PyPDF2
+pdfplumber

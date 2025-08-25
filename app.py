@@ -491,130 +491,128 @@ def reporte_analisis_lista_inv_sin_venta(excel_bytes: bytes, params: dict):
 
     return [save_dataframe_xlsx(sin_venta, f"analisis_lista_inv_sin_venta_{anio}")]
 
-def reporte_pendientes_lista_precios(excel_bytes: bytes, params: dict):
+def reporte_rotacion_inventario(excel_bytes: bytes, params: dict):
     """
-    Compara la ÚLTIMA venta por ITEM (precio unitario = NETO/QTYSHIP) contra la lista vigente.
-    Exporta un Excel con columnas:
-      ITEM, DESCRIPCION_VENTA, FECHA_ULT_VENTA, PRECIO_FACTURADO,
-      PRECIO_LISTA, DIFERENCIA, DESCRIPCION_LISTA, ESTADO
+    Calcula rotación de inventario por ITEM:
+      - MESES: meses con ventas (>0) por ítem
+      - VENTA_TOTAL: sum(QTYSHIP)
+      - PROMEDIO_MES: VENTA_TOTAL / MESES
+      - INVENTARIO: tomado de 'Inventario SAI' (C7:E1200)
+      - MESES_DIVISION: INVENTARIO / PROMEDIO_MES  (0 si PROMEDIO_MES=0)
 
-    Requiere: request.files['lista'] (xlsx/xls/csv/pdf).
-    Devuelve: [("pendientes_lista_precios.xlsx", BytesIO)]
+    Devuelve: [("rotacion_inventario.xlsx", BytesIO)]
     """
-    # ---------- 1) FACTURACIÓN: última venta por ITEM ----------
+    # === 1) FACTURACIÓN ===
+    import io
+    import pandas as pd
+
     df_fac = pd.read_excel(io.BytesIO(excel_bytes), sheet_name="Facturacion")
-    df_fac = _normalizar_cols(df_fac)
+    df_fac.columns = (
+        df_fac.columns.astype(str).str.strip().str.upper().str.replace("\xa0", "", regex=True)
+    )
 
-    req = {"ITEM", "DESCRIPCION", "FECHA", "NETO", "QTYSHIP"}
-    faltan = req - set(df_fac.columns)
+    columnas_fact = {"ITEM", "DESCRIPCION", "FECHA", "QTYSHIP"}
+    faltan = columnas_fact - set(df_fac.columns)
     if faltan:
         raise ValueError(f"Faltan columnas en 'Facturacion': {faltan}")
 
-    df_fac = df_fac.dropna(subset=["ITEM", "FECHA"]).copy()
+    df_fac = df_fac.dropna(subset=["FECHA", "QTYSHIP", "ITEM"]).copy()
+    df_fac["FECHA"] = pd.to_datetime(df_fac["FECHA"], errors="coerce")
+    df_fac["QTYSHIP"] = pd.to_numeric(df_fac["QTYSHIP"], errors="coerce").fillna(0)
     df_fac["ITEM"] = df_fac["ITEM"].astype(str).str.strip().str.upper()
     df_fac["DESCRIPCION"] = df_fac["DESCRIPCION"].astype(str).str.strip()
-    df_fac["FECHA"] = pd.to_datetime(df_fac["FECHA"], errors="coerce")
-    df_fac["NETO"] = pd.to_numeric(df_fac["NETO"], errors="coerce")
-    df_fac["QTYSHIP"] = pd.to_numeric(df_fac["QTYSHIP"], errors="coerce")
+    df_fac["AÑO_MES"] = df_fac["FECHA"].dt.to_period("M")
 
-    # evitar divisiones inválidas
-    df_fac = df_fac[(df_fac["QTYSHIP"] > 0) & (df_fac["NETO"].notna())].copy()
-    df_fac["PRECIO_UNIT"] = df_fac["NETO"] / df_fac["QTYSHIP"]
+    meses_activos = (
+        df_fac[df_fac["QTYSHIP"] > 0]
+        .groupby(["ITEM", "DESCRIPCION"])["AÑO_MES"]
+        .nunique()
+        .reset_index()
+        .rename(columns={"AÑO_MES": "MESES"})
+    )
 
-    # última fila por ITEM (por fecha)
-    df_fac = df_fac.sort_values(["ITEM", "FECHA"])
-    ultimos = (df_fac.drop_duplicates("ITEM", keep="last")
-                     .loc[:, ["ITEM", "DESCRIPCION", "FECHA", "PRECIO_UNIT"]]
-                     .rename(columns={
-                         "DESCRIPCION": "DESCRIPCION_VENTA",
-                         "FECHA": "FECHA_ULT_VENTA",
-                         "PRECIO_UNIT": "PRECIO_FACTURADO"
-                     }))
+    ventas_totales = (
+        df_fac.groupby(["ITEM", "DESCRIPCION"], as_index=False)["QTYSHIP"].sum()
+              .rename(columns={"QTYSHIP": "VENTA_TOTAL"})
+    )
 
-    # ---------- 2) LISTA vigente desde request.files['lista'] ----------
-    df_lista = _leer_lista_precios_desde_request()  # debe devolver ITEM, PRECIO_LISTA y opcional DESCRIPCION_LISTA
-    if "PRECIO_LISTA" not in df_lista.columns:
-        raise ValueError("La lista no tiene columna de precio reconocible (PRECIO_LISTA). "
-                         "Usa un Excel/CSV con precio o un PDF que incluya precios legibles.")
+    resumen = pd.merge(ventas_totales, meses_activos, on=["ITEM", "DESCRIPCION"], how="left").fillna(0)
+    resumen["PROMEDIO_MES"] = resumen.apply(
+        lambda row: row["VENTA_TOTAL"] / row["MESES"] if row["MESES"] > 0 else 0, axis=1
+    )
 
-    # asegurar columnas que usaremos
-    if "DESCRIPCION_LISTA" not in df_lista.columns:
-        df_lista["DESCRIPCION_LISTA"] = ""
+    # === 2) INVENTARIO (C7:E1200 de 'Inventario SAI') ===
+    df_inv = pd.read_excel(io.BytesIO(excel_bytes), sheet_name="Inventario SAI", header=None)
+    df_inv = df_inv.iloc[6:1200, 2:5].copy()  # C7:E1200
+    df_inv.columns = ["ITEM", "OTRA_COL", "INVENTARIO"]
+    df_inv["ITEM"] = df_inv["ITEM"].astype(str).str.strip().str.upper()
+    df_inv["INVENTARIO"] = pd.to_numeric(df_inv["INVENTARIO"], errors="coerce").fillna(0)
 
-    # ---------- 3) Cruce y cálculo de estado ----------
-    base = ultimos.merge(df_lista[["ITEM", "PRECIO_LISTA", "DESCRIPCION_LISTA"]],
-                         on="ITEM", how="left", validate="one_to_one")
-    base["DIFERENCIA"] = base["PRECIO_FACTURADO"] - base["PRECIO_LISTA"]
+    resumen = pd.merge(resumen, df_inv[["ITEM", "INVENTARIO"]], on="ITEM", how="left").fillna(0)
 
-    tol_pct = 0.01  # 1%
-    def _estado(row):
-        pf, pl = row["PRECIO_FACTURADO"], row["PRECIO_LISTA"]
-        if pd.isna(pl):
-            return "No está en lista"
-        if pd.isna(pf) and pd.isna(pl):
-            return "OK"
-        if (pl or 0) == 0:
-            return "Precio distinto" if (pf or 0) != 0 else "OK"
-        rel = abs((pf or 0) - (pl or 0)) / max(abs(pl), 1e-9)
-        return "Precio distinto" if rel > tol_pct else "OK"
+    # === 3) Métrica de rotación (meses de división) ===
+    resumen["MESES_DIVISION"] = resumen.apply(
+        lambda row: (row["INVENTARIO"] / row["PROMEDIO_MES"]) if row["PROMEDIO_MES"] != 0 else 0, axis=1
+    )
 
-    base["ESTADO"] = base.apply(_estado, axis=1)
+    # Cast a int como el original
+    for col in resumen.select_dtypes(include=["float", "int"]).columns:
+        try:
+            resumen[col] = pd.to_numeric(resumen[col], errors="coerce").fillna(0).astype(int)
+        except Exception:
+            pass
 
-    pendientes = base[base["ESTADO"].isin(["No está en lista", "Precio distinto"])].copy()
-    pendientes["ORD"] = pendientes["ESTADO"].map({"No está en lista": 0, "Precio distinto": 1})
-    pendientes = pendientes.sort_values(["ORD", "DIFERENCIA"], ascending=[True, False]).drop(columns=["ORD"])
+    # Orden de columnas
+    resumen = resumen[[
+        "ITEM", "DESCRIPCION", "MESES", "VENTA_TOTAL",
+        "PROMEDIO_MES", "INVENTARIO", "MESES_DIVISION"
+    ]]
 
-    # ---------- 4) Exportar con las MISMAS columnas que el original ----------
-    cols_out = [
-        "ITEM", "DESCRIPCION_VENTA", "FECHA_ULT_VENTA",
-        "PRECIO_FACTURADO", "PRECIO_LISTA", "DIFERENCIA",
-        "DESCRIPCION_LISTA", "ESTADO"
-    ]
+    # === 4) Exportar ===
+    return [save_dataframe_xlsx(resumen, "rotacion_inventario")]
 
-    # si no hay pendientes, exportar headers vacíos
-    if pendientes.empty:
-        empty = pd.DataFrame(columns=cols_out)
-        return [save_dataframe_xlsx(empty, "pendientes_lista_precios")]
 
-    # Formato bonito (opcional, como el original)
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
-        pendientes.to_excel(writer, index=False, sheet_name="Pendientes", columns=cols_out)
 
-        wb = writer.book
-        ws = writer.sheets["Pendientes"]
-        money = wb.add_format({"num_format": '"$"#,##0.00'})
-        datef = wb.add_format({"num_format": "yyyy-mm-dd"})
-        header = wb.add_format({"bold": True, "bg_color": "#FFE699"})
+import io, os, re
+import pandas as pd
+from flask import request
 
-        # header y tamaños
-        for c, name in enumerate(cols_out):
-            ws.write(0, c, name, header)
-        widths = [18, 38, 15, 16, 16, 14, 38, 18]
-        for i, w in enumerate(widths):
-            ws.set_column(i, i, w)
-        ws.set_column(2, 2, 15, datef)      # FECHA_ULT_VENTA
-        for col in [3, 4, 5]:               # precios y diferencia
-            ws.set_column(col, col, 16, money)
 
-    out.seek(0)
-    return [("pendientes_lista_precios.xlsx", out)]
+def _normalizar_cols(df: pd.DataFrame) -> pd.DataFrame:
+    df.columns = df.columns.astype(str).str.strip().str.upper()
+    return df
 
-def _leer_lista_precios_desde_request() -> pd.DataFrame:
+def _normalizar_item(col: pd.Series) -> pd.Series:
+    # Deja SOLO letras y números (limpia NBSP, espacios, guiones raros, etc.)
+    return (col.astype(str)
+               .str.upper()
+               .str.replace(r"[^A-Z0-9]", "", regex=True))
+
+def _codigo_base(item: str) -> str:
+    # Elimina sufijos comunes para agrupar variantes (APSUN6-C -> APSUN6)
+    if not isinstance(item, str):
+        return ""
+    item = item.upper().strip()
+    return re.sub(r"(-C|-N|-D|-LD|-LN|-SP)$", "", item)
+
+def _leer_lista_precios_desde_request(fact_items: set[str] | None = None) -> tuple[pd.DataFrame, tuple[str, io.BytesIO] | None]:
     """
-    Lee la lista de precios desde request.files['lista'] (xlsx/xls/csv/pdf)
-    y devuelve DF con columnas: ITEM, DESCRIPCION_LISTA, PRECIO_LISTA (si existe).
+    Lee la lista (xlsx/xls/csv/pdf). Si es PDF, primero lo convierte a DataFrame
+    y además retorna un Excel convertido para descargar.
+    Devuelve: (df_estandarizado, xlsx_convertido | None)
+              df_estandarizado con columnas: ITEM, PRECIO_LISTA?, DESCRIPCION_LISTA?
     """
     fs = request.files.get("lista")
     if not fs or not fs.filename:
-        raise ValueError("Adjunta la lista de precios como archivo 'lista' (xlsx/xls/csv/pdf).")
+        raise ValueError("Adjunta la lista de precios como archivo 'lista'.")
 
     filename = fs.filename.lower()
     ext = os.path.splitext(filename)[1]
+    converted_xlsx = None
 
-    # --- Leer a DataFrame bruto según extensión ---
+    # --- lectura / conversión ---
     if ext in [".xlsx", ".xls"]:
-        xls_bytes = fs.read()  # lee una sola vez
+        xls_bytes = fs.read()
         xls = pd.ExcelFile(io.BytesIO(xls_bytes))
         hojas = []
         for sn in xls.sheet_names:
@@ -625,48 +623,68 @@ def _leer_lista_precios_desde_request() -> pd.DataFrame:
         df_lista_raw = pd.concat(hojas, ignore_index=True) if hojas else pd.DataFrame()
 
     elif ext == ".csv":
-        csv_bytes = fs.read()  # lee una sola vez
+        csv_bytes = fs.read()
         df_lista_raw = pd.read_csv(io.BytesIO(csv_bytes), encoding="utf-8", sep=None, engine="python")
         df_lista_raw = _normalizar_cols(df_lista_raw)
 
     elif ext == ".pdf":
-        pdf_bytes = fs.read()  # lee una sola vez
-        df_lista_raw = extraer_lista_precios_pdf_bytes(pdf_bytes)
+        pdf_bytes = fs.read()
+        df_lista_raw = _pdf_lista_to_dataframe(pdf_bytes)
+        # si se pudo leer algo, arma un Excel convertido para que el usuario lo descargue
+        if not df_lista_raw.empty:
+            buf = io.BytesIO()
+            df_lista_raw.to_excel(buf, index=False)
+            buf.seek(0)
+            converted_xlsx = ("lista_convertida_desde_pdf.xlsx", buf)
 
     else:
-        raise ValueError("Formato de lista no soportado. Usa xlsx/xls/csv/pdf.")
+        raise ValueError("Formato no soportado: usa xlsx/xls/csv/pdf.")
 
     if df_lista_raw is None or df_lista_raw.empty:
         raise ValueError("No pude leer una tabla válida desde la lista de precios.")
 
-    # --- Mapear columnas a ITEM / PRECIO_LISTA / DESCRIPCION_LISTA ---
-    candidatos_item   = {"ITEM","CODIGO","CÓDIGO","SKU","REFERENCIA"}
-    candidatos_precio = {"PRECIO","PRECIO_LISTA","PRICE","PVP","VALOR","LISTA","PRECIO UNITARIO"}
+    # --- heurística columnas ---
+    candidatos_item   = {"ITEM","CODIGO","CÓDIGO","SKU","REFERENCIA","REF","CÓDIGO ITEM"}
+    candidatos_precio = {"PRECIO","PRECIO_LISTA","PRICE","PVP","VALOR","LISTA","PRECIO UNITARIO","PRECIO VENTA"}
     candidatos_desc   = {"DESCRIPCION","DESCRIPCIÓN","NOMBRE","PRODUCTO","DETALLE"}
 
     cols = list(df_lista_raw.columns)
 
-    def pick_col(cands, cols):
-        for c in cols:
+    def pick_col(cands, cols_list):
+        for c in cols_list:
             if c in cands: return c
-        for c in cols:
+        for c in cols_list:
+            up = str(c).upper()
             for k in cands:
-                if k in c: return c
+                if k in up:
+                    return c
         return None
 
-    col_item = pick_col(candidatos_item, cols)
+    posibles = [c for c in cols if any(k in str(c).upper() for k in candidatos_item)]
+    if not posibles:
+        raise ValueError("No se encontró columna de ITEM en la lista.")
+
+    mejor_col = posibles[0]
+    if fact_items:
+        fact_items_norm = set(_normalizar_item(pd.Series(list(fact_items))))
+        max_inter = -1
+        for c in posibles:
+            norm_vals = _normalizar_item(pd.Series(df_lista_raw[c]).dropna())
+            inter = len(set(norm_vals) & fact_items_norm)
+            if inter > max_inter:
+                mejor_col, max_inter = c, inter
+
+    col_item = mejor_col
     col_prec = pick_col(candidatos_precio, cols)
     col_desc = pick_col(candidatos_desc, cols)
-
-    if not col_item:
-        raise ValueError("No se encontró columna de ITEM en la lista.")
 
     keep = [col_item] + ([col_prec] if col_prec else []) + ([col_desc] if col_desc else [])
     df_lista = df_lista_raw[keep].copy()
     new_cols = ["ITEM"] + (["PRECIO_LISTA"] if col_prec else []) + (["DESCRIPCION_LISTA"] if col_desc else [])
     df_lista.columns = new_cols
 
-    df_lista["ITEM"] = df_lista["ITEM"].astype(str).str.strip().str.upper()
+    # normalizar
+    df_lista["ITEM"] = _normalizar_item(df_lista["ITEM"])
     if "PRECIO_LISTA" in df_lista.columns:
         df_lista["PRECIO_LISTA"] = (
             df_lista["PRECIO_LISTA"].astype(str)
@@ -679,7 +697,162 @@ def _leer_lista_precios_desde_request() -> pd.DataFrame:
         df_lista["DESCRIPCION_LISTA"] = ""
 
     df_lista = df_lista.dropna(subset=["ITEM"]).drop_duplicates(subset=["ITEM"], keep="first")
-    return df_lista
+    return df_lista, converted_xlsx
+
+def reporte_pendientes_lista_precios(excel_bytes: bytes, params: dict):
+    """
+    Ítems facturados que NO existen en la lista de precios,
+    tolerando diferencias de sufijo y caracteres invisibles.
+    Ahora incluye INVENTARIO desde la hoja 'Inventario SAI'.
+    """
+    # --- 1) Facturación ---
+    df_fac = pd.read_excel(io.BytesIO(excel_bytes), sheet_name="Facturacion")
+    df_fac = _normalizar_cols(df_fac)
+
+    req = {"ITEM", "DESCRIPCION", "FECHA", "NETO", "QTYSHIP"}
+    faltan = req - set(df_fac.columns)
+    if faltan:
+        raise ValueError(f"Faltan columnas en 'Facturacion': {faltan}")
+
+    df_fac = df_fac.dropna(subset=["ITEM", "FECHA"]).copy()
+    df_fac["ITEM"] = _normalizar_item(df_fac["ITEM"])
+    df_fac["DESCRIPCION"] = df_fac["DESCRIPCION"].astype(str).str.strip()
+    df_fac["FECHA"] = pd.to_datetime(df_fac["FECHA"], errors="coerce")
+    df_fac["NETO"] = pd.to_numeric(df_fac["NETO"], errors="coerce")
+    df_fac["QTYSHIP"] = pd.to_numeric(df_fac["QTYSHIP"], errors="coerce")
+
+    df_fac = df_fac[(df_fac["QTYSHIP"] > 0) & (df_fac["NETO"].notna())].copy()
+    df_fac["PRECIO_UNIT"] = df_fac["NETO"] / df_fac["QTYSHIP"]
+
+    ultimos = (df_fac.sort_values(["ITEM", "FECHA"])
+                     .drop_duplicates("ITEM", keep="last")
+                     .loc[:, ["ITEM", "DESCRIPCION", "FECHA", "PRECIO_UNIT"]]
+                     .rename(columns={
+                         "DESCRIPCION": "DESCRIPCION_VENTA",
+                         "FECHA": "FECHA_ULT_VENTA",
+                         "PRECIO_UNIT": "ULTIMO_PRECIO_FACTURADO"
+                     }))
+
+    # --- 2) Inventario (hoja Inventario SAI) ---
+    try:
+        df_inv = pd.read_excel(io.BytesIO(excel_bytes), sheet_name="Inventario SAI", header=None)
+        df_inv = df_inv.iloc[6:1200, 2:5].copy()  # rango C7:E1200
+        df_inv.columns = ["ITEM", "OTRA_COL", "INVENTARIO"]
+        df_inv["ITEM"] = _normalizar_item(df_inv["ITEM"])
+        df_inv["INVENTARIO"] = pd.to_numeric(df_inv["INVENTARIO"], errors="coerce").fillna(0)
+        df_inv = df_inv[["ITEM", "INVENTARIO"]].drop_duplicates("ITEM")
+    except Exception:
+        df_inv = pd.DataFrame(columns=["ITEM", "INVENTARIO"])
+
+    # --- 3) Lista (soporta PDF→Excel) ---
+    df_lista, lista_convertida = _leer_lista_precios_desde_request(set(ultimos["ITEM"]))
+
+    # --- 4) Cruce robusto por código base ---
+    fact_norm  = ultimos.assign(COD_BASE=ultimos["ITEM"].apply(_codigo_base))
+    lista_norm = df_lista.assign(COD_BASE=df_lista["ITEM"].apply(_codigo_base))
+
+    comparacion = fact_norm.merge(
+        lista_norm[["COD_BASE"]], on="COD_BASE", how="left", indicator=True
+    )
+    pendientes = comparacion.query('_merge == "left_only"').drop(columns=["_merge"])
+
+    # --- 5) Agregar inventario ---
+    pendientes = pendientes.merge(df_inv, on="ITEM", how="left")
+    pendientes["INVENTARIO"] = pendientes["INVENTARIO"].fillna(0).astype(int)
+
+    # --- 6) Exportar ---
+    cols_out = [
+        "ITEM", "DESCRIPCION_VENTA", "FECHA_ULT_VENTA",
+        "ULTIMO_PRECIO_FACTURADO", "INVENTARIO"
+    ]
+    outputs = []
+
+    buf = io.BytesIO()
+    if pendientes.empty:
+        pd.DataFrame(columns=cols_out).to_excel(buf, index=False)
+    else:
+        pendientes[cols_out].to_excel(buf, index=False)
+    buf.seek(0)
+    outputs.append(("pendientes_lista_precios.xlsx", buf))
+
+    # Si la lista fue PDF, agrega el Excel convertido
+    if lista_convertida is not None:
+        outputs.append(lista_convertida)
+
+    return outputs
+
+def _pdf_lista_to_dataframe(pdf_bytes: bytes) -> pd.DataFrame:
+    """
+    Extrae la lista de precios desde un PDF:
+      1) tabula-py (si hay Java)
+      2) camelot (si hay Ghostscript)
+      3) pdfplumber + regex (fallback)
+    Devuelve un DataFrame tabular crudo. No guarda archivo.
+    """
+    # --- 1) TABULA ---
+    try:
+        import tabula  # requiere Java
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tf:
+            tf.write(pdf_bytes); tf.flush()
+            dfs = tabula.read_pdf(tf.name, pages="all", lattice=True, multiple_tables=True)
+            if not dfs:
+                dfs = tabula.read_pdf(tf.name, pages="all", stream=True, multiple_tables=True)
+        if dfs:
+            df = pd.concat(dfs, ignore_index=True)
+            return _normalizar_cols(df)
+    except Exception:
+        pass
+
+    # --- 2) CAMELOT ---
+    try:
+        import camelot  # requiere ghostscript
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tf:
+            tf.write(pdf_bytes); tf.flush()
+            tables = camelot.read_pdf(tf.name, pages="all", flavor="lattice")
+            if not tables or tables.n == 0:
+                tables = camelot.read_pdf(tf.name, pages="all", flavor="stream")
+        if tables and tables.n > 0:
+            frames = [t.df for t in tables]
+            df = pd.concat(frames, ignore_index=True)
+            if not df.empty:
+                df.columns = [str(c).strip() for c in df.iloc[0].tolist()]
+                df = df.iloc[1:].reset_index(drop=True)
+            return _normalizar_cols(df)
+    except Exception:
+        pass
+
+    # --- 3) pdfplumber (fallback texto + regex) ---
+    try:
+        import pdfplumber
+        rows = []
+        patron = re.compile(r"^([A-Z0-9\-/\.]+)\s+(.*?)\s*\$?\s*([\d\.\,]+)\s*$")
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                for line in text.split("\n"):
+                    s = line.strip()
+                    if not s:
+                        continue
+                    m = patron.match(s)
+                    if not m:
+                        continue
+                    item = m.group(1).strip()
+                    desc = m.group(2).strip()
+                    precio = m.group(3).strip().replace(".", "").replace(",", ".")
+                    try:
+                        precio = float(precio)
+                    except:
+                        precio = None
+                    rows.append([item, desc, precio])
+        if rows:
+            df = pd.DataFrame(rows, columns=["ITEM", "DESCRIPCION_LISTA", "PRECIO_LISTA"])
+            return _normalizar_cols(df)
+    except Exception:
+        pass
+
+    return pd.DataFrame()
 
 
 def run_report(reporte, excel_bytes, params):
@@ -713,7 +886,8 @@ def run_report(reporte, excel_bytes, params):
         return reporte_analisis_lista_inv_sin_venta(excel_bytes, params)
     elif reporte == "reporte_pendientes_lista_precios":
         return reporte_pendientes_lista_precios(excel_bytes, params)
-
+    elif reporte == "reporte_rotacion_inventario":
+        return reporte_rotacion_inventario(excel_bytes, params)
     else:
         raise ValueError(f"Reporte desconocido: {reporte}")
 
